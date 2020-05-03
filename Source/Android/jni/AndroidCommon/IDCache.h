@@ -8,10 +8,18 @@
 
 namespace IDCache
 {
-JavaVM* GetJavaVM();
+static constexpr jint JNI_VERSION = JNI_VERSION_1_6;
+
+JNIEnv* GetEnvForThread();
 
 jclass GetNativeLibraryClass();
 jmethodID GetDisplayAlertMsg();
+jmethodID GetDoRumble();
+jmethodID GetUpdateTouchPointer();
+
+jclass GetAnalyticsClass();
+jmethodID GetSendAnalyticsReport();
+jmethodID GetAnalyticsValue();
 
 jclass GetGameFileClass();
 jfieldID GetGameFilePointer();

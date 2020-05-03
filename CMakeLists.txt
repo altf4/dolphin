@@ -1,13 +1,14 @@
 ########################################
 # General setup
 #
-cmake_minimum_required(VERSION 3.5.0)
+cmake_minimum_required(VERSION 3.10)
 set(CMAKE_OSX_ARCHITECTURES "x86_64")
 # Minimum OS X version.
 # This is inserted into the Info.plist as well.
-# Note that the SDK determines the maximum version of which optional
-# features can be used, not the minimum required version to run.
-set(CMAKE_OSX_DEPLOYMENT_TARGET "10.9" CACHE STRING "")
+
+# MacOS prior to 10.12 did not fully support C++17, which is used to
+# handle configuration options
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.12.0" CACHE STRING "")
 
 project(dolphin-emu)
 
@@ -16,10 +17,16 @@ project(dolphin-emu)
 # unique name here.
 set(DISTRIBUTOR "None" CACHE STRING "Name of the distributor.")
 
-option(USE_EGL "Enables EGL OpenGL Interface" OFF)
-option(TRY_X11 "Enables X11 Support" ON)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+  option(ENABLE_X11 "Enables X11 Support" ON)
+endif()
+if(NOT WIN32 AND NOT APPLE)
+  option(ENABLE_EGL "Enables EGL OpenGL Interface" ON)
+endif()
+
 option(USE_SHARED_ENET "Use shared libenet if found rather than Dolphin's soon-to-compatibly-diverge version" OFF)
 option(USE_UPNP "Enables UPnP port mapping support" ON)
+option(ENABLE_NOGUI "Enable NoGUI frontend" ON)
 option(ENABLE_QT "Enable Qt (Default)" ON)
 option(ENABLE_LTO "Enables Link Time Optimization" OFF)
 option(ENABLE_GENERIC "Enables generic build that should run on any little-endian host" OFF)
@@ -27,6 +34,7 @@ option(ENABLE_HEADLESS "Enables running Dolphin as a headless variant" OFF)
 option(ENABLE_ALSA "Enables ALSA sound backend" ON)
 option(ENABLE_PULSEAUDIO "Enables PulseAudio sound backend" ON)
 option(ENABLE_LLVM "Enables LLVM support, for disassembly" ON)
+option(ENABLE_TESTS "Enables building the unit tests" ON)
 option(USE_DISCORD_PRESENCE "Enables Discord Rich Presence, show the current game on Discord" ON)
 
 # Maintainers: if you consider blanket disabling this for your users, please
@@ -47,8 +55,8 @@ option(OPROFILING "Enable profiling" OFF)
 # TODO: Add DSPSpy
 option(DSPTOOL "Build dsptool" OFF)
 
-# Enable SDL for default on operating systems that aren't OSX, Android, Linux or Windows.
-if(NOT APPLE AND NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MSVC)
+# Enable SDL for default on operating systems that aren't Android, Linux or Windows.
+if(NOT ANDROID AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT MSVC)
   option(ENABLE_SDL "Enables SDL as a generic controller backend" ON)
 else()
   option(ENABLE_SDL "Enables SDL as a generic controller backend" OFF)
@@ -87,13 +95,8 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # Set up paths
 set(bindir  ${CMAKE_INSTALL_PREFIX}/bin               CACHE PATH "bindir")
-if(HAIKU)
-	set(datadir ${CMAKE_INSTALL_PREFIX}/data/dolphin-emu  CACHE PATH "datadir")
-	set(mandir  ${CMAKE_INSTALL_PREFIX}/documentation/man CACHE PATH "mandir")
-else()
-	set(datadir ${CMAKE_INSTALL_PREFIX}/share/dolphin-emu CACHE PATH "datadir")
-	set(mandir  ${CMAKE_INSTALL_PREFIX}/share/man         CACHE PATH "mandir")
-endif()
+set(datadir ${CMAKE_INSTALL_PREFIX}/share/dolphin-emu CACHE PATH "datadir")
+set(mandir  ${CMAKE_INSTALL_PREFIX}/share/man         CACHE PATH "mandir")
 add_definitions(-DDATA_DIR="${datadir}/")
 
 if(CMAKE_SYSROOT)
@@ -106,6 +109,19 @@ endif()
 # here.  You must run "make install" to install these to the proper location
 # as defined above.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/Binaries)
+
+if (WIN32)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/Binary)
+
+	if (CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+	  string(APPEND CMAKE_RUNTIME_OUTPUT_DIRECTORY /ARM64)
+  endif()
+
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO ${CMAKE_RUNTIME_OUTPUT_DIRECTORY})
+endif()
 
 # setup CCache
 include(CCache)
@@ -189,9 +205,7 @@ elseif(_ARCH_64 AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
   add_definitions(-D_M_X86_64=1)
   check_and_add_flag(HAVE_SSE2 -msse2)
 elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
-  set(_M_ARM 1)
   set(_M_ARM_64 1)
-  add_definitions(-D_M_ARM=1)
   add_definitions(-D_M_ARM_64=1)
   # CRC instruction set is used in the CRC32 hash function
   check_and_add_flag(HAVE_ARCH_ARMV8 -march=armv8-a+crc)
@@ -203,8 +217,8 @@ endif()
 
 
 # Enforce minimum GCC version
-if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 6.0)
-  message(FATAL_ERROR "Dolphin requires at least GCC 6.0 (found ${CMAKE_CXX_COMPILER_VERSION})")
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 7.0)
+  message(FATAL_ERROR "Dolphin requires at least GCC 7.0 (found ${CMAKE_CXX_COMPILER_VERSION})")
 endif()
 
 if(CMAKE_GENERATOR MATCHES "Ninja")
@@ -365,14 +379,16 @@ if(ANDROID)
   message(STATUS "Building for Android")
   if(NOT ENABLE_HEADLESS)
     add_definitions(-DANDROID)
+    if(ENABLE_NOGUI)
+      message(STATUS "Building Android app, disabling NoGUI frontend.")
+      set(ENABLE_NOGUI 0)
+    endif()
   else()
     # Lie to cmake a bit. We are cross compiling to Android
     # but not as a shared library. We want an executable.
     set(ANDROID 0)
   endif()
-  set(USE_X11 0)
   set(USE_UPNP 0)
-  set(USE_EGL 1)
   set(ENABLE_QT 0)
   set(USE_DISCORD_PRESENCE 0)
 
@@ -381,23 +397,12 @@ if(ANDROID)
   SET(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
   SET(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
   SET(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
-elseif(HAIKU)
-  set(USE_X11 0)
-  set(USE_UPNP 0)
-  set(USE_EGL 0)
 endif()
 
 if(ENABLE_HEADLESS)
-  if(APPLE)
-    message(STATUS "Enabling Headless! Disabling GUI.")
-  else()
-    message(STATUS "Enabling Headless! Disabling GUI, force enabling EGL!")
-    set(USE_EGL 1)
-  endif()
-  set(USE_X11 0)
+  message(STATUS "Enabling Headless! Disabling GUI.")
   set(ENABLE_QT 0)
   set(USE_DISCORD_PRESENCE 0)
-  add_definitions(-DUSE_HEADLESS)
 endif()
 
 # Set file offset size to 64 bits.
@@ -419,48 +424,42 @@ endif()
 include(CheckLib)
 include(CheckCXXSourceRuns)
 
-set(OpenGL_GL_PREFERENCE GLVND)
+set(OpenGL_GL_PREFERENCE GLVND CACHE STRING "Linux-only: if GLVND, use the vendor-neutral GL libraries (default). If LEGACY, use the legacy ones (might be necessary to have optirun/primusrun work)")
+set_property(CACHE OpenGL_GL_PREFERENCE PROPERTY STRINGS GLVND LEGACY)
 find_package(OpenGL)
 if (OPENGL_GL)
   include_directories(${OPENGL_INCLUDE_DIR})
 endif()
 
-set(USE_X11 0)
-
-if(UNIX AND NOT APPLE AND NOT ANDROID AND NOT HAIKU AND NOT ENABLE_HEADLESS)
+if(ENABLE_X11)
   find_package(X11)
-  if(TRY_X11 AND X11_FOUND)
-    set(USE_X11 1)
+  if(X11_FOUND)
     add_definitions(-DHAVE_X11=1)
-    include_directories(${X11_INCLUDE_DIR})
+    check_lib(XRANDR xrandr Xrandr)
+    if(XRANDR_FOUND)
+      add_definitions(-DHAVE_XRANDR=1)
+    else()
+      add_definitions(-DHAVE_XRANDR=0)
+    endif()
+    pkg_check_modules(X11_INPUT REQUIRED xi>=1.5.0)
     message(STATUS "X11 support enabled")
   else()
-    set(USE_X11 0)
-    SET(X11_FOUND "")
-    message(STATUS "X11 support disabled")
-    add_definitions(-DHAVE_X11=0)
-  endif()
-
-  if (NOT USE_X11)
-    message(FATAL_ERROR "\n"
-            "No suitable display platform found\n"
-            "Requires x11 to run")
+    message(WARNING "X11 support enabled but not found. This build will not support X11.")
   endif()
 endif()
 
-if(USE_X11)
-  check_lib(XRANDR xrandr Xrandr)
-  if(XRANDR_FOUND)
-    add_definitions(-DHAVE_XRANDR=1)
+if(ENABLE_EGL)
+  find_package(EGL)
+  if(EGL_FOUND)
+    add_definitions(-DHAVE_EGL=1)
+    message(STATUS "EGL OpenGL interface enabled")
   else()
-    add_definitions(-DHAVE_XRANDR=0)
+    message(WARNING "EGL support enabled but not found. This build will not support EGL.")
   endif()
-
-  pkg_check_modules(X11_INPUT REQUIRED xi>=1.5.0)
 endif()
 
 if(ENCODE_FRAMEDUMPS)
-  if(WIN32)
+  if(WIN32 AND _M_X86_64)
     set(FFMPEG_DIR Externals/ffmpeg)
   endif()
   find_package(FFmpeg COMPONENTS avcodec avformat avutil swscale)
@@ -480,11 +479,6 @@ if(OPROFILING)
   else()
     message(FATAL_ERROR "OProfile not found. Can't build profiling support.")
   endif()
-endif()
-
-if(USE_EGL)
-  message(STATUS "EGL OpenGL interface enabled")
-  add_definitions(-DUSE_EGL=1)
 endif()
 
 if(ENABLE_EVDEV)
@@ -534,9 +528,19 @@ endif()
 #   - place the CMakeLists.txt in the first-level subdirectory, e.g.
 #     Externals/zlib/CMakeLists.txt (that is: NOT in some Src/ subdirectory)
 #
-add_subdirectory(Externals/Bochs_disasm)
+if (_M_X86)
+  add_subdirectory(Externals/Bochs_disasm)
+endif()
 add_subdirectory(Externals/cpp-optparse)
+find_package(fmt 6.0)
+if(fmt_FOUND)
+  message(STATUS "Using shared fmt ${fmt_VERSION}")
+else()
+  message(STATUS "Using static fmt from Externals")
+  add_subdirectory(Externals/fmt EXCLUDE_FROM_ALL)
+endif()
 add_subdirectory(Externals/glslang)
+add_subdirectory(Externals/imgui)
 
 find_package(pugixml)
 if(NOT pugixml_FOUND)
@@ -576,12 +580,43 @@ if(NOT XXHASH_FOUND)
   add_subdirectory(Externals/xxhash)
 endif()
 
+find_package(BZip2)
+if(BZIP2_FOUND)
+  message(STATUS "Using shared bzip2")
+else()
+  message(STATUS "Shared bzip2 not found, falling back to the static library")
+  add_subdirectory(Externals/bzip2)
+endif()
+
+# macOS ships with liblzma.dylib but no headers, so check for the headers too
+find_package(LibLZMA)
+check_include_file(lzma.h HAVE_LZMA_H)
+if(LIBLZMA_FOUND AND HAVE_LZMA_H)
+  message(STATUS "Using shared lzma")
+else()
+  if(LIBLZMA_FOUND AND NOT HAVE_LZMA_H)
+    message(STATUS "Shared lzma found but lacks headers, falling back to the static library")
+  else()
+    message(STATUS "Shared lzma not found, falling back to the static library")
+  endif()
+  add_subdirectory(Externals/liblzma)
+endif()
+
 find_package(ZLIB)
 if(ZLIB_FOUND)
   message(STATUS "Using shared zlib")
 else()
   message(STATUS "Shared zlib not found, falling back to the static library")
   add_subdirectory(Externals/zlib)
+endif()
+
+pkg_check_modules(MINIZIP minizip>=2.0.0)
+if(MINIZIP_FOUND)
+  message(STATUS "Using shared minizip")
+else()
+  message(STATUS "Shared minizip not found, falling back to the static library")
+  add_subdirectory(Externals/minizip)
+  include_directories(External/minizip)
 endif()
 
 if(NOT APPLE)
@@ -606,12 +641,29 @@ else()
   set(PNG png)
 endif()
 
+# Using static FreeSurround from Externals
+# There is no system FreeSurround library.
+message(STATUS "Using static FreeSurround from Externals")
+add_subdirectory(Externals/FreeSurround)
+
+if (APPLE OR WIN32)
+  message(STATUS "Using ed25519 from Externals")
+  add_subdirectory(Externals/ed25519)
+  include_directories(Externals/ed25519)
+endif()
+
 # Using static soundtouch from Externals
 # Unable to use system soundtouch library: We require shorts, not floats.
 add_subdirectory(Externals/soundtouch)
-include_directories(Externals)
+include_directories(Externals/soundtouch)
 
-add_subdirectory(Externals/cubeb EXCLUDE_FROM_ALL)
+find_package(Cubeb)
+if(CUBEB_FOUND)
+  message(STATUS "Using the system cubeb")
+else()
+  message(STATUS "Using static cubeb from Externals")
+  add_subdirectory(Externals/cubeb EXCLUDE_FROM_ALL)
+endif()
 
 if(NOT ANDROID)
   add_definitions(-D__LIBUSB__)
@@ -704,6 +756,7 @@ endif()
 if(USE_DISCORD_PRESENCE)
   message(STATUS "Using static DiscordRPC from Externals")
   add_subdirectory(Externals/discord-rpc)
+  include_directories(Externals/discord-rpc/include)
 endif()
 
 find_package(Libsystemd)
@@ -713,6 +766,12 @@ if(SYSTEMD_FOUND)
 else()
   message(STATUS "libsystemd not found, disabling traversal server watchdog support")
 endif()
+
+if (WIN32)
+  include_directories(Externals/OpenAL/include)
+endif()
+
+include_directories(Externals/picojson)
 
 ########################################
 # Pre-build events: Define configuration variables and write SCM info header
@@ -732,8 +791,12 @@ include_directories("${PROJECT_BINARY_DIR}/Source/Core")
 ########################################
 # Unit testing.
 #
-message(STATUS "Using static gtest from Externals")
-add_subdirectory(Externals/gtest EXCLUDE_FROM_ALL)
+if(ENABLE_TESTS)
+  message(STATUS "Using static gtest from Externals")
+  add_subdirectory(Externals/gtest EXCLUDE_FROM_ALL)
+else()
+  message(STATUS "Unit tests are disabled")
+endif()
 
 ########################################
 # Process Dolphin source now that all setup is complete

@@ -3,7 +3,9 @@
 // Refer to the license.txt file included.
 
 #include "VideoCommon/ShaderGenCommon.h"
-#include "Common/CommonPaths.h"
+
+#include <fmt/format.h>
+
 #include "Common/FileUtil.h"
 #include "Core/ConfigManager.h"
 
@@ -34,6 +36,7 @@ ShaderHostConfig ShaderHostConfig::GetCurrent()
       g_ActiveConfig.backend_info.bSupportsDynamicSamplerIndexing;
   bits.backend_shader_framebuffer_fetch = g_ActiveConfig.backend_info.bSupportsFramebufferFetch;
   bits.backend_logic_op = g_ActiveConfig.backend_info.bSupportsLogicOp;
+  bits.backend_palette_conversion = g_ActiveConfig.backend_info.bSupportsPaletteConversion;
   return bits;
 }
 
@@ -75,7 +78,7 @@ std::string GetDiskShaderCacheFileName(APIType api_type, const char* type, bool 
   {
     // We're using 21 bits, so 6 hex characters.
     ShaderHostConfig host_config = ShaderHostConfig::GetCurrent();
-    filename += StringFromFormat("-%06X", host_config.bits);
+    filename += fmt::format("-{:06X}", host_config.bits);
   }
 
   filename += ".cache";

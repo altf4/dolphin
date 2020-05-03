@@ -2,11 +2,14 @@
 // Licensed under GPLv2+
 // Refer to the license.txt file included.
 
-#include <cinttypes>
+#include "Common/Timer.h"
+
 #include <ctime>
 #include <string>
 
 #ifdef _WIN32
+#include <cwchar>
+
 #include <windows.h>
 #include <mmsystem.h>
 #include <sys/timeb.h>
@@ -14,9 +17,10 @@
 #include <sys/time.h>
 #endif
 
+#include <fmt/format.h>
+
 #include "Common/CommonTypes.h"
 #include "Common/StringUtil.h"
-#include "Common/Timer.h"
 
 namespace Common
 {
@@ -147,9 +151,8 @@ std::string Timer::GetTimeElapsedFormatted() const
   // Hours
   u32 Hours = Minutes / 60;
 
-  std::string TmpStr = StringFromFormat("%02i:%02i:%02i:%03" PRIu64, Hours, Minutes % 60,
-                                        Seconds % 60, Milliseconds % 1000);
-  return TmpStr;
+  return fmt::format("{:02}:{:02}:{:02}:{:03}", Hours, Minutes % 60, Seconds % 60,
+                     Milliseconds % 1000);
 }
 
 // Get current time
@@ -203,22 +206,27 @@ std::string Timer::GetTimeFormatted()
 
   struct tm* gmTime = localtime(&sysTime);
 
+#ifdef _WIN32
+  wchar_t tmp[13];
+  wcsftime(tmp, 6, L"%M:%S", gmTime);
+#else
   char tmp[13];
   strftime(tmp, 6, "%M:%S", gmTime);
+#endif
 
 // Now tack on the milliseconds
 #ifdef _WIN32
   struct timeb tp;
   (void)::ftime(&tp);
-  return StringFromFormat("%s:%03i", tmp, tp.millitm);
+  return UTF16ToUTF8(tmp) + fmt::format(":{:03}", tp.millitm);
 #elif defined __APPLE__
   struct timeval t;
   (void)gettimeofday(&t, nullptr);
-  return StringFromFormat("%s:%03d", tmp, (int)(t.tv_usec / 1000));
+  return fmt::format("{}:{:03}", tmp, t.tv_usec / 1000);
 #else
   struct timespec t;
   (void)clock_gettime(CLOCK_MONOTONIC, &t);
-  return StringFromFormat("%s:%03d", tmp, (int)(t.tv_nsec / 1000000));
+  return fmt::format("{}:{:03}", tmp, t.tv_nsec / 1000000);
 #endif
 }
 
@@ -265,9 +273,15 @@ std::string Timer::GetDateTimeFormatted(double time)
   time_t seconds = (time_t)time + DOUBLE_TIME_OFFSET;
   tm* localTime = localtime(&seconds);
 
+#ifdef _WIN32
+  wchar_t tmp[32] = {};
+  wcsftime(tmp, sizeof(tmp), L"%x %X", localTime);
+  return UTF16ToUTF8(tmp);
+#else
   char tmp[32] = {};
   strftime(tmp, sizeof(tmp), "%x %X", localTime);
   return tmp;
+#endif
 }
 
 }  // Namespace Common

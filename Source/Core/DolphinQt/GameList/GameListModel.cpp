@@ -4,6 +4,8 @@
 
 #include "DolphinQt/GameList/GameListModel.h"
 
+#include <QDir>
+#include <QFileInfo>
 #include <QPixmap>
 
 #include "Core/ConfigManager.h"
@@ -28,7 +30,7 @@ GameListModel::GameListModel(QObject* parent) : QAbstractTableModel(parent)
   connect(&Settings::Instance(), &Settings::PathRemoved, &m_tracker, &GameTracker::RemoveDirectory);
   connect(&Settings::Instance(), &Settings::GameListRefreshRequested, &m_tracker,
           &GameTracker::RefreshAll);
-  connect(&Settings::Instance(), &Settings::TitleDBReloadRequested, this,
+  connect(&Settings::Instance(), &Settings::TitleDBReloadRequested,
           [this] { m_title_database = Core::TitleDatabase(); });
 
   for (const QString& dir : Settings::Instance().GetPaths())
@@ -42,6 +44,11 @@ GameListModel::GameListModel(QObject* parent) : QAbstractTableModel(parent)
     emit layoutAboutToBeChanged();
     emit layoutChanged();
   });
+
+  auto& settings = Settings::GetQSettings();
+
+  m_tag_list = settings.value(QStringLiteral("gamelist/tags")).toStringList();
+  m_game_tags = settings.value(QStringLiteral("gamelist/game_tags")).toMap();
 }
 
 QVariant GameListModel::data(const QModelIndex& index, int role) const
@@ -84,6 +91,8 @@ QVariant GameListModel::data(const QModelIndex& index, int role) const
     if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
     {
       QString name = QString::fromStdString(game.GetName(m_title_database));
+
+      // Add disc numbers > 1 to title if not present.
       const int disc_nr = game.GetDiscNumber() + 1;
       if (disc_nr > 1)
       {
@@ -92,6 +101,21 @@ QVariant GameListModel::data(const QModelIndex& index, int role) const
           name.append(tr(" (Disc %1)").arg(disc_nr));
         }
       }
+
+      // For natural sorting, pad all numbers to the same length.
+      if (Qt::InitialSortOrderRole == role)
+      {
+        constexpr int MAX_NUMBER_LENGTH = 10;
+
+        QRegExp rx(QStringLiteral("\\d+"));
+        int pos = 0;
+        while ((pos = rx.indexIn(name, pos)) != -1)
+        {
+          name.replace(pos, rx.matchedLength(), rx.cap().rightJustified(MAX_NUMBER_LENGTH));
+          pos += MAX_NUMBER_LENGTH;
+        }
+      }
+
       return name;
     }
     break;
@@ -101,22 +125,55 @@ QVariant GameListModel::data(const QModelIndex& index, int role) const
     break;
   case COL_DESCRIPTION:
     if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
-      return QString::fromStdString(game.GetDescription());
+    {
+      return QString::fromStdString(
+                 game.GetDescription(UICommon::GameFile::Variant::LongAndPossiblyCustom))
+          .replace(QLatin1Char('\n'), QLatin1Char(' '));
+    }
     break;
   case COL_MAKER:
     if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
-      return QString::fromStdString(game.GetMaker());
+    {
+      return QString::fromStdString(
+          game.GetMaker(UICommon::GameFile::Variant::LongAndPossiblyCustom));
+    }
     break;
   case COL_FILE_NAME:
     if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
       return QString::fromStdString(game.GetFileName());
     break;
+  case COL_FILE_PATH:
+    if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
+    {
+      QString file_path = QDir::toNativeSeparators(
+          QFileInfo(QString::fromStdString(game.GetFilePath())).canonicalPath());
+      if (!file_path.endsWith(QDir::separator()))
+        file_path.append(QDir::separator());
+      return file_path;
+    }
+    break;
   case COL_SIZE:
     if (role == Qt::DisplayRole)
-      return QString::fromStdString(UICommon::FormatSize(game.GetFileSize()));
+    {
+      std::string str = UICommon::FormatSize(game.GetFileSize());
+
+      // Add asterisk to size of compressed files.
+      if (game.GetFileSize() != game.GetVolumeSize())
+        str += '*';
+
+      return QString::fromStdString(str);
+    }
     if (role == Qt::InitialSortOrderRole)
       return static_cast<quint64>(game.GetFileSize());
     break;
+  case COL_TAGS:
+    if (role == Qt::DisplayRole || role == Qt::InitialSortOrderRole)
+    {
+      auto tags = GetGameTags(game.GetFilePath());
+      tags.sort();
+
+      return tags.join(QStringLiteral(", "));
+    }
   }
 
   return QVariant();
@@ -141,8 +198,12 @@ QVariant GameListModel::headerData(int section, Qt::Orientation orientation, int
     return tr("Maker");
   case COL_FILE_NAME:
     return tr("File Name");
+  case COL_FILE_PATH:
+    return tr("File Path");
   case COL_SIZE:
     return tr("Size");
+  case COL_TAGS:
+    return tr("Tags");
   }
   return QVariant();
 }
@@ -156,6 +217,8 @@ int GameListModel::rowCount(const QModelIndex& parent) const
 
 int GameListModel::columnCount(const QModelIndex& parent) const
 {
+  if (parent.isValid())
+    return 0;
   return NUM_COLS;
 }
 
@@ -246,7 +309,7 @@ void GameListModel::AddGame(const std::shared_ptr<const UICommon::GameFile>& gam
 
 void GameListModel::UpdateGame(const std::shared_ptr<const UICommon::GameFile>& game)
 {
-  int index = FindGame(game->GetFilePath());
+  int index = FindGameIndex(game->GetFilePath());
   if (index < 0)
   {
     AddGame(game);
@@ -254,13 +317,13 @@ void GameListModel::UpdateGame(const std::shared_ptr<const UICommon::GameFile>& 
   else
   {
     m_games[index] = game;
-    emit dataChanged(createIndex(index, 0), createIndex(index + 1, columnCount(QModelIndex())));
+    emit dataChanged(createIndex(index, 0), createIndex(index, columnCount(QModelIndex()) - 1));
   }
 }
 
 void GameListModel::RemoveGame(const std::string& path)
 {
-  int entry = FindGame(path);
+  int entry = FindGameIndex(path);
   if (entry < 0)
     return;
 
@@ -269,7 +332,13 @@ void GameListModel::RemoveGame(const std::string& path)
   endRemoveRows();
 }
 
-int GameListModel::FindGame(const std::string& path) const
+std::shared_ptr<const UICommon::GameFile> GameListModel::FindGame(const std::string& path) const
+{
+  const int index = FindGameIndex(path);
+  return index < 0 ? nullptr : m_games[index];
+}
+
+int GameListModel::FindGameIndex(const std::string& path) const
 {
   for (int i = 0; i < m_games.size(); i++)
   {
@@ -279,7 +348,99 @@ int GameListModel::FindGame(const std::string& path) const
   return -1;
 }
 
+std::shared_ptr<const UICommon::GameFile>
+GameListModel::FindSecondDisc(const UICommon::GameFile& game) const
+{
+  std::shared_ptr<const UICommon::GameFile> match_without_revision = nullptr;
+
+  if (DiscIO::IsDisc(game.GetPlatform()))
+  {
+    for (auto& other_game : m_games)
+    {
+      if (game.GetGameID() == other_game->GetGameID() &&
+          game.GetDiscNumber() != other_game->GetDiscNumber())
+      {
+        if (game.GetRevision() == other_game->GetRevision())
+          return other_game;
+        else
+          match_without_revision = other_game;
+      }
+    }
+  }
+
+  return match_without_revision;
+}
+
 void GameListModel::SetSearchTerm(const QString& term)
 {
   m_term = term;
+}
+
+void GameListModel::SetScale(float scale)
+{
+  m_scale = scale;
+}
+
+float GameListModel::GetScale() const
+{
+  return m_scale;
+}
+
+const QStringList& GameListModel::GetAllTags() const
+{
+  return m_tag_list;
+}
+
+const QStringList GameListModel::GetGameTags(const std::string& path) const
+{
+  return m_game_tags[QString::fromStdString(path)].toStringList();
+}
+
+void GameListModel::AddGameTag(const std::string& path, const QString& name)
+{
+  auto tags = GetGameTags(path);
+
+  if (tags.contains(name))
+    return;
+
+  tags << name;
+
+  m_game_tags[QString::fromStdString(path)] = tags;
+  Settings::GetQSettings().setValue(QStringLiteral("gamelist/game_tags"), m_game_tags);
+}
+
+void GameListModel::RemoveGameTag(const std::string& path, const QString& name)
+{
+  auto tags = GetGameTags(path);
+
+  tags.removeAll(name);
+
+  m_game_tags[QString::fromStdString(path)] = tags;
+
+  Settings::GetQSettings().setValue(QStringLiteral("gamelist/game_tags"), m_game_tags);
+}
+
+void GameListModel::NewTag(const QString& name)
+{
+  if (m_tag_list.contains(name))
+    return;
+
+  m_tag_list << name;
+
+  Settings::GetQSettings().setValue(QStringLiteral("gamelist/tags"), m_tag_list);
+}
+
+void GameListModel::DeleteTag(const QString& name)
+{
+  m_tag_list.removeAll(name);
+
+  for (const auto& file : m_game_tags.keys())
+    RemoveGameTag(file.toStdString(), name);
+
+  Settings::GetQSettings().setValue(QStringLiteral("gamelist/tags"), m_tag_list);
+}
+
+void GameListModel::PurgeCache()
+{
+  m_tracker.PurgeCache();
 }

@@ -62,9 +62,6 @@ public:
   ~MemoryWatcher();
   void Step();
 
-  static void Init();
-  static void Shutdown();
-
 private:
   bool LoadAddresses(const std::string& path);
   bool OpenSocket(const std::string& path);
@@ -76,10 +73,10 @@ private:
   std::string ComposeMessage(const std::string& line, u32 value);
   std::string ComposeMessage(const std::string& line, const LinkedList::Blob&);
 
-  bool m_running;
+  bool m_running = false;
 
   int m_fd;
-  sockaddr_un m_addr;
+  sockaddr_un m_addr{};
 
   // Address as stored in the file -> list of offsets to follow
   std::map<std::string, std::vector<u32>> m_addresses;

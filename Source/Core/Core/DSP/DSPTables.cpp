@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdio>
 
 #include "Common/CommonTypes.h"
 #include "Common/Logging/Log.h"
@@ -511,7 +512,7 @@ std::array<const DSPOPCTemplate*, OPTABLE_SIZE> s_op_table;
 std::array<const DSPOPCTemplate*, EXT_OPTABLE_SIZE> s_ext_op_table;
 
 template <size_t N>
-auto FindByName(const std::string& name, const std::array<DSPOPCTemplate, N>& data)
+auto FindByName(std::string_view name, const std::array<DSPOPCTemplate, N>& data)
 {
   return std::find_if(data.cbegin(), data.cend(),
                       [&name](const auto& info) { return name == info.name; });
@@ -527,7 +528,7 @@ const DSPOPCTemplate* FindOpInfoByOpcode(UDSPInstruction opcode)
   return &*iter;
 }
 
-const DSPOPCTemplate* FindOpInfoByName(const std::string& name)
+const DSPOPCTemplate* FindOpInfoByName(std::string_view name)
 {
   const auto iter = FindByName(name, s_opcodes);
   if (iter == s_opcodes.cend())
@@ -545,7 +546,7 @@ const DSPOPCTemplate* FindExtOpInfoByOpcode(UDSPInstruction opcode)
   return &*iter;
 }
 
-const DSPOPCTemplate* FindExtOpInfoByName(const std::string& name)
+const DSPOPCTemplate* FindExtOpInfoByName(std::string_view name)
 {
   const auto iter = FindByName(name, s_opcodes_ext);
   if (iter == s_opcodes_ext.cend())

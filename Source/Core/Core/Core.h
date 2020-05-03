@@ -13,18 +13,20 @@
 #include <functional>
 #include <memory>
 #include <string>
-#include <vector>
+#include <string_view>
 
 #include "Common/CommonTypes.h"
 
 struct BootParameters;
+struct WindowSystemInfo;
 
 namespace Core
 {
 bool GetIsThrottlerTempDisabled();
 void SetIsThrottlerTempDisabled(bool disable);
 
-void Callback_VideoCopiedToXFB(bool video_update);
+void Callback_FramePresented();
+void Callback_NewField();
 
 enum class State
 {
@@ -35,14 +37,14 @@ enum class State
   Starting,
 };
 
-bool Init(std::unique_ptr<BootParameters> boot);
+bool Init(std::unique_ptr<BootParameters> boot, const WindowSystemInfo& wsi);
 void Stop();
 void Shutdown();
 
 void DeclareAsCPUThread();
 void UndeclareAsCPUThread();
 
-std::string StopMessage(bool, const std::string&);
+std::string StopMessage(bool main_thread, std::string_view message);
 
 bool IsRunning();
 bool IsRunningAndStarted();       // is running and the CPU loop has been entered
@@ -55,18 +57,19 @@ bool WantsDeterminism();
 // [NOT THREADSAFE] For use by Host only
 void SetState(State state);
 State GetState();
+void WaitUntilDoneBooting();
 
 void SaveScreenShot(bool wait_for_completion = false);
-void SaveScreenShot(const std::string& name, bool wait_for_completion = false);
+void SaveScreenShot(std::string_view name, bool wait_for_completion = false);
 
 void Callback_WiimoteInterruptChannel(int number, u16 channel_id, const u8* data, u32 size);
 
 // This displays messages in a user-visible way.
-void DisplayMessage(const std::string& message, int time_in_ms);
+void DisplayMessage(std::string message, int time_in_ms);
 
 void FrameUpdateOnCPUThread();
+void OnFrameEnd();
 
-bool ShouldSkipFrame(int skipped);
 void VideoThrottle();
 void RequestRefreshInfo();
 
@@ -80,6 +83,10 @@ void UpdateTitle();
 //
 // This should only be called from the CPU thread or the host thread.
 void RunAsCPUThread(std::function<void()> function);
+
+// Run a function on the CPU thread, asynchronously.
+// This is only valid to call from the host thread, since it uses PauseAndLock() internally.
+void RunOnCPUThread(std::function<void()> function, bool wait_for_completion);
 
 // for calling back into UI code without introducing a dependency on it in core
 using StateChangedCallbackFunc = std::function<void(Core::State)>;
@@ -105,4 +112,6 @@ void HostDispatchJobs();
 
 void DoFrameStep();
 
-}  // namespace
+void UpdateInputGate(bool require_focus);
+
+}  // namespace Core

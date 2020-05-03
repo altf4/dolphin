@@ -49,7 +49,6 @@ bool FifoPlayer::Open(const std::string& filename)
 
   if (m_File)
   {
-    FifoAnalyzer::Init();
     FifoPlaybackAnalyzer::AnalyzeFrames(m_File.get(), m_FrameInfo);
 
     m_FrameRangeEnd = m_File->GetFrameCount();
@@ -167,6 +166,17 @@ std::unique_ptr<CPUCoreBase> FifoPlayer::GetCPUCore()
     return nullptr;
 
   return std::make_unique<CPUCore>(this);
+}
+
+void FifoPlayer::SetFileLoadedCallback(CallbackFunc callback)
+{
+  m_FileLoadedCb = std::move(callback);
+
+  // Trigger the callback immediatly if the file is already loaded.
+  if (GetFile() != nullptr)
+  {
+    m_FileLoadedCb();
+  }
 }
 
 bool FifoPlayer::IsRunningWithFakeVideoInterfaceUpdates() const
@@ -288,7 +298,7 @@ void FifoPlayer::WriteFrame(const FifoFrameInfo& frame, const AnalyzedFrameInfo&
   FlushWGP();
 
   // Sleep while the GPU is active
-  while (!IsIdleSet())
+  while (!IsIdleSet() && CPU::GetState() != CPU::State::PowerDown)
   {
     CoreTiming::Idle();
     CoreTiming::Advance();
@@ -346,9 +356,9 @@ void FifoPlayer::WriteMemory(const MemoryUpdate& memUpdate)
   u8* mem = nullptr;
 
   if (memUpdate.address & 0x10000000)
-    mem = &Memory::m_pEXRAM[memUpdate.address & Memory::EXRAM_MASK];
+    mem = &Memory::m_pEXRAM[memUpdate.address & Memory::GetExRamMask()];
   else
-    mem = &Memory::m_pRAM[memUpdate.address & Memory::RAM_MASK];
+    mem = &Memory::m_pRAM[memUpdate.address & Memory::GetRamMask()];
 
   std::copy(memUpdate.data.begin(), memUpdate.data.end(), mem);
 }

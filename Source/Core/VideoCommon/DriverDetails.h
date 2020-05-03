@@ -27,7 +27,6 @@ enum OS
   OS_ANDROID = (1 << 4),
   OS_FREEBSD = (1 << 5),
   OS_OPENBSD = (1 << 6),
-  OS_HAIKU = (1 << 7),
 };
 // Enum of known vendors
 // Tegra and Nvidia are separated out due to such substantial differences
@@ -50,19 +49,20 @@ enum Vendor
 enum Driver
 {
   DRIVER_ALL = 0,
-  DRIVER_NVIDIA,     // Official Nvidia, including mobile GPU
-  DRIVER_NOUVEAU,    // OSS nouveau
-  DRIVER_ATI,        // Official ATI
-  DRIVER_R600,       // OSS Radeon
-  DRIVER_INTEL,      // Official Intel
-  DRIVER_I965,       // OSS Intel
-  DRIVER_ARM,        // Official Mali driver
-  DRIVER_LIMA,       // OSS Mali driver
-  DRIVER_QUALCOMM,   // Official Adreno driver
-  DRIVER_FREEDRENO,  // OSS Adreno driver
-  DRIVER_IMGTEC,     // Official PowerVR driver
-  DRIVER_VIVANTE,    // Official Vivante driver
-  DRIVER_UNKNOWN     // Unknown driver, default to official hardware driver
+  DRIVER_NVIDIA,       // Official Nvidia, including mobile GPU
+  DRIVER_NOUVEAU,      // OSS nouveau
+  DRIVER_ATI,          // Official ATI
+  DRIVER_R600,         // OSS Radeon
+  DRIVER_INTEL,        // Official Intel
+  DRIVER_I965,         // OSS Intel
+  DRIVER_ARM,          // Official Mali driver
+  DRIVER_LIMA,         // OSS Mali driver
+  DRIVER_QUALCOMM,     // Official Adreno driver
+  DRIVER_FREEDRENO,    // OSS Adreno driver
+  DRIVER_IMGTEC,       // Official PowerVR driver
+  DRIVER_VIVANTE,      // Official Vivante driver
+  DRIVER_PORTABILITY,  // Vulkan via Metal on macOS
+  DRIVER_UNKNOWN       // Unknown driver, default to official hardware driver
 };
 
 enum class Family
@@ -246,7 +246,8 @@ enum Bug
   // BUG: The GPU shader code appears to be context-specific on Mesa/i965.
   // This means that if we compiled the ubershaders asynchronously, they will be recompiled
   // on the main thread the first time they are used, causing stutter. For now, disable
-  // asynchronous compilation on Mesa i965.
+  // asynchronous compilation on Mesa i965. On nouveau, our use of glFinish() can cause
+  // crashes and/or lockups.
   // Started version: -1
   // Ended Version: -1
   BUG_SHARED_CONTEXT_SHADER_COMPILATION,
@@ -268,6 +269,23 @@ enum Bug
   // Started Version: 1.7
   // Ended Version: 1.10
   BUG_BROKEN_CLEAR_LOADOP_RENDERPASS,
+
+  // BUG: 32-bit depth clears are broken in the Adreno Vulkan driver, and have no effect.
+  // To work around this, we use a D24_S8 buffer instead, which results in a loss of accuracy.
+  // We still resolve this to a R32F texture, as there is no 24-bit format.
+  // Started version: -1
+  // Ended version: -1
+  BUG_BROKEN_D32F_CLEAR,
+
+  // BUG: Reversed viewport depth range does not work as intended on some Vulkan drivers.
+  // The Vulkan spec allows the minDepth/maxDepth fields in the viewport to be reversed,
+  // however the implementation is broken on some drivers.
+  BUG_BROKEN_REVERSED_DEPTH_RANGE,
+
+  // BUG: Cached memory is significantly slower for readbacks than coherent memory in the
+  // Mali Vulkan driver, causing high CPU usage in the __pi___inval_cache_range kernel
+  // function. This flag causes readback buffers to select the coherent type.
+  BUG_SLOW_CACHED_READBACK_MEMORY,
 };
 
 // Initializes our internal vendor, device family, and driver version
@@ -276,4 +294,4 @@ void Init(API api, Vendor vendor, Driver driver, const double version, const Fam
 // Once Vendor and driver version is set, this will return if it has the applicable bug passed to
 // it.
 bool HasBug(Bug bug);
-}
+}  // namespace DriverDetails

@@ -34,7 +34,7 @@ GameTracker::GameTracker(QObject* parent) : QFileSystemWatcher(parent)
 
   connect(this, &QFileSystemWatcher::directoryChanged, this, &GameTracker::UpdateDirectory);
   connect(this, &QFileSystemWatcher::fileChanged, this, &GameTracker::UpdateFile);
-  connect(&Settings::Instance(), &Settings::AutoRefreshToggled, this, [] {
+  connect(&Settings::Instance(), &Settings::AutoRefreshToggled, [] {
     const auto paths = Settings::Instance().GetPaths();
 
     for (const auto& path : paths)
@@ -42,6 +42,10 @@ GameTracker::GameTracker(QObject* parent) : QFileSystemWatcher(parent)
       Settings::Instance().RemovePath(path);
       Settings::Instance().AddPath(path);
     }
+  });
+
+  connect(&Settings::Instance(), &Settings::MetadataRefreshRequested, [this] {
+    m_load_thread.EmplaceItem(Command{CommandType::UpdateMetadata, {}});
   });
 
   m_load_thread.Reset([this](Command command) {
@@ -52,6 +56,7 @@ GameTracker::GameTracker(QObject* parent) : QFileSystemWatcher(parent)
       break;
     case CommandType::Start:
       StartInternal();
+      break;
     case CommandType::AddDirectory:
       AddDirectoryInternal(command.path);
       break;
@@ -63,6 +68,30 @@ GameTracker::GameTracker(QObject* parent) : QFileSystemWatcher(parent)
       break;
     case CommandType::UpdateFile:
       UpdateFileInternal(command.path);
+      break;
+    case CommandType::UpdateMetadata:
+      m_cache.UpdateAdditionalMetadata(
+          [this](const std::shared_ptr<const UICommon::GameFile>& game) {
+            emit GameUpdated(game);
+          });
+      QueueOnObject(this, [] { Settings::Instance().NotifyMetadataRefreshComplete(); });
+      break;
+    case CommandType::PurgeCache:
+      m_cache.Clear(UICommon::GameFileCache::DeleteOnDisk::Yes);
+      break;
+    case CommandType::BeginRefresh:
+      if (m_busy_count++ == 0)
+      {
+        for (auto& file : m_tracked_files.keys())
+          emit GameRemoved(file.toStdString());
+        m_tracked_files.clear();
+      }
+      break;
+    case CommandType::EndRefresh:
+      if (--m_busy_count == 0)
+      {
+        QueueOnObject(this, [] { Settings::Instance().NotifyRefreshGameListComplete(); });
+      }
       break;
     }
   });
@@ -121,6 +150,8 @@ void GameTracker::StartInternal()
   cache_updated |= m_cache.UpdateAdditionalMetadata(emit_game_updated);
   if (cache_updated)
     m_cache.Save();
+
+  QueueOnObject(this, [] { Settings::Instance().NotifyMetadataRefreshComplete(); });
 }
 
 bool GameTracker::AddPath(const QString& dir)
@@ -160,16 +191,15 @@ void GameTracker::RemoveDirectory(const QString& dir)
 
 void GameTracker::RefreshAll()
 {
-  for (auto& file : m_tracked_files.keys())
-    emit GameRemoved(file.toStdString());
-
-  m_tracked_files.clear();
+  m_load_thread.EmplaceItem(Command{CommandType::BeginRefresh});
 
   for (const QString& dir : Settings::Instance().GetPaths())
   {
     m_load_thread.EmplaceItem(Command{CommandType::RemoveDirectory, dir});
     m_load_thread.EmplaceItem(Command{CommandType::AddDirectory, dir});
   }
+
+  m_load_thread.EmplaceItem(Command{CommandType::EndRefresh});
 }
 
 void GameTracker::UpdateDirectory(const QString& dir)
@@ -308,4 +338,10 @@ void GameTracker::LoadGame(const QString& path)
     if (cache_changed)
       m_cache.Save();
   }
+}
+
+void GameTracker::PurgeCache()
+{
+  m_load_thread.EmplaceItem(Command{CommandType::PurgeCache, {}});
+  RefreshAll();
 }

@@ -33,8 +33,6 @@
 
 namespace IOS::HLE
 {
-constexpr int WII_SOCKET_FD_MAX = 24;
-
 char* WiiSockMan::DecodeError(s32 ErrorCode)
 {
 #ifdef _WIN32
@@ -170,6 +168,12 @@ s32 WiiSocket::CloseFd()
     ReturnValue = WiiSockMan::GetNetErrorCode(EITHER(WSAENOTSOCK, EBADF), "CloseFd", false);
   }
   fd = -1;
+
+  for (auto it = pending_sockops.begin(); it != pending_sockops.end();)
+  {
+    GetIOS()->EnqueueIPCReply(it->request, -SO_ENOTCONN);
+    it = pending_sockops.erase(it);
+  }
   return ReturnValue;
 }
 
@@ -268,7 +272,7 @@ void WiiSocket::Update(bool read, bool write, bool except)
 
         ReturnValue = WiiSockMan::GetInstance().AddSocket(ret, true);
 
-        ioctl.Log("IOCTL_SO_ACCEPT", LogTypes::IOS_NET);
+        ioctl.Log("IOCTL_SO_ACCEPT", Common::Log::IOS_NET);
         break;
       }
       default:
@@ -292,13 +296,13 @@ void WiiSocket::Update(bool read, bool write, bool except)
       u32 BufferOut = 0, BufferOut2 = 0;
       u32 BufferOutSize = 0, BufferOutSize2 = 0;
 
-      if (ioctlv.in_vectors.size() > 0)
+      if (!ioctlv.in_vectors.empty())
       {
         BufferIn = ioctlv.in_vectors.at(0).address;
         BufferInSize = ioctlv.in_vectors.at(0).size;
       }
 
-      if (ioctlv.io_vectors.size() > 0)
+      if (!ioctlv.io_vectors.empty())
       {
         BufferOut = ioctlv.io_vectors.at(0).address;
         BufferOutSize = ioctlv.io_vectors.at(0).size;
@@ -319,7 +323,7 @@ void WiiSocket::Update(bool read, bool write, bool except)
       if (it->is_ssl)
       {
         int sslID = Memory::Read_U32(BufferOut) - 1;
-        if (SSLID_VALID(sslID))
+        if (IOS::HLE::Device::IsSSLIDValid(sslID))
         {
           switch (it->ssl_type)
           {

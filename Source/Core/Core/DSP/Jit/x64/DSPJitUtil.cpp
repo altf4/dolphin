@@ -264,7 +264,7 @@ void DSPEmitter::dsp_op_read_reg(int reg, Gen::X64Reg host_dreg, RegisterExtensi
     CMP(64, R(host_dreg), acc_reg);
     FixupBranch no_saturate = J_CC(CC_Z);
 
-    CMP(64, acc_reg, Imm32(0));
+    TEST(64, acc_reg, acc_reg);
     FixupBranch negative = J_CC(CC_LE);
 
     MOV(64, R(host_dreg), Imm32(0x7fff));  // this works for all extend modes
@@ -317,12 +317,11 @@ void DSPEmitter::increment_addr_reg(int reg)
   m_gpr.PutReg(DSP_REG_WR0 + reg, false);
 
   const OpArg ar_reg = m_gpr.GetReg(DSP_REG_AR0 + reg);
-  MOVZX(32, 16, EAX, ar_reg);
-
   X64Reg tmp1 = m_gpr.GetFreeXReg();
+  MOVZX(32, 16, tmp1, ar_reg);
+
   // u32 nar = ar + 1;
-  MOV(32, R(tmp1), R(EAX));
-  ADD(32, R(EAX), Imm8(1));
+  LEA(32, EAX, MDisp(tmp1, 1));
 
   // if ((nar ^ ar) > ((wr | 1) << 1))
   //		nar -= wr + 1;
@@ -594,7 +593,6 @@ void DSPEmitter::dmem_read(X64Reg address)
   FixupBranch dram = J_CC(CC_A);
   //	return g_dsp.dram[addr & DSP_DRAM_MASK];
   AND(32, R(address), Imm32(DSP_DRAM_MASK));
-  MOVZX(64, 16, address, R(address));
   MOV(64, R(ECX), ImmPtr(g_dsp.dram));
   MOV(16, R(EAX), MComplex(ECX, address, SCALE_2, 0));
 
@@ -605,7 +603,6 @@ void DSPEmitter::dmem_read(X64Reg address)
   FixupBranch ifx = J_CC(CC_A);
   //		return g_dsp.coef[addr & DSP_COEF_MASK];
   AND(32, R(address), Imm32(DSP_COEF_MASK));
-  MOVZX(64, 16, address, R(address));
   MOV(64, R(ECX), ImmPtr(g_dsp.coef));
   MOV(16, R(EAX), MComplex(ECX, address, SCALE_2, 0));
 
@@ -668,28 +665,12 @@ void DSPEmitter::get_long_prod(X64Reg long_prod)
 }
 
 // Returns s64 in RAX
-// Clobbers RCX
 void DSPEmitter::get_long_prod_round_prodl(X64Reg long_prod)
 {
   // s64 prod = dsp_get_long_prod();
   get_long_prod(long_prod);
 
-  X64Reg tmp = m_gpr.GetFreeXReg();
-  // if (prod & 0x10000) prod = (prod + 0x8000) & ~0xffff;
-  TEST(32, R(long_prod), Imm32(0x10000));
-  FixupBranch jump = J_CC(CC_Z);
-  ADD(64, R(long_prod), Imm32(0x8000));
-  MOV(64, R(tmp), Imm64(~0xffff));
-  AND(64, R(long_prod), R(tmp));
-  FixupBranch _ret = J();
-  // else prod = (prod + 0x7fff) & ~0xffff;
-  SetJumpTarget(jump);
-  ADD(64, R(long_prod), Imm32(0x7fff));
-  MOV(64, R(tmp), Imm64(~0xffff));
-  AND(64, R(long_prod), R(tmp));
-  SetJumpTarget(_ret);
-  // return prod;
-  m_gpr.PutXReg(tmp);
+  round_long_acc(long_prod);
 }
 
 // For accurate emulation, this is wrong - but the real prod registers behave
@@ -710,22 +691,13 @@ void DSPEmitter::set_long_prod()
 }
 
 // Returns s64 in RAX
-// Clobbers RCX
 void DSPEmitter::round_long_acc(X64Reg long_acc)
 {
   // if (prod & 0x10000) prod = (prod + 0x8000) & ~0xffff;
-  TEST(32, R(long_acc), Imm32(0x10000));
-  FixupBranch jump = J_CC(CC_Z);
-  ADD(64, R(long_acc), Imm32(0x8000));
-  MOV(64, R(ECX), Imm64(~0xffff));
-  AND(64, R(long_acc), R(RCX));
-  FixupBranch _ret = J();
   // else prod = (prod + 0x7fff) & ~0xffff;
-  SetJumpTarget(jump);
-  ADD(64, R(long_acc), Imm32(0x7fff));
-  MOV(64, R(RCX), Imm64(~0xffff));
-  AND(64, R(long_acc), R(RCX));
-  SetJumpTarget(_ret);
+  BT(32, R(long_acc), Imm8(16));
+  ADC(64, R(long_acc), Imm32(0x7FFF));
+  XOR(16, R(long_acc), R(long_acc));
   // return prod;
 }
 

@@ -9,16 +9,19 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
+
+#include <fmt/format.h>
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
+#include "Common/Config/Config.h"
 #include "Common/FileUtil.h"
 #include "Common/IniFile.h"
 #include "Common/Logging/Log.h"
-#include "Common/NandPaths.h"
-#include "Common/StringUtil.h"
 #include "Core/CommonTitles.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/CoreTiming.h"
 #include "Core/HW/EXI/EXI.h"
@@ -31,6 +34,7 @@
 #include "Core/HW/Sram.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/Movie.h"
+#include "Core/NetPlayProto.h"
 #include "DiscIO/Enums.h"
 
 namespace ExpansionInterface
@@ -138,7 +142,7 @@ CEXIMemoryCard::CEXIMemoryCard(const int index, bool gciFolder) : card_index(ind
   bool useMC251;
   IniFile gameIni = SConfig::GetInstance().LoadGameIni();
   gameIni.GetOrCreateSection("Core")->Get("MemoryCard251", &useMC251, false);
-  u16 sizeMb = useMC251 ? MemCard251Mb : MemCard2043Mb;
+  u16 sizeMb = useMC251 ? MBIT_SIZE_MEMORY_CARD_251 : MBIT_SIZE_MEMORY_CARD_2043;
 
   if (gciFolder)
   {
@@ -150,43 +154,69 @@ CEXIMemoryCard::CEXIMemoryCard(const int index, bool gciFolder) : card_index(ind
   }
 
   memory_card_size = memorycard->GetCardId() * SIZE_TO_Mb;
-  u8 header[20] = {0};
-  memorycard->Read(0, static_cast<s32>(ArraySize(header)), header);
-  SetCardFlashID(header, card_index);
+  std::array<u8, 20> header{};
+  memorycard->Read(0, static_cast<s32>(header.size()), header.data());
+  SetCardFlashID(header.data(), card_index);
+}
+
+std::pair<std::string /* path */, bool /* migrate */>
+CEXIMemoryCard::GetGCIFolderPath(int card_index, AllowMovieFolder allow_movie_folder)
+{
+  std::string path_override =
+      Config::Get(card_index == 0 ? Config::MAIN_GCI_FOLDER_A_PATH_OVERRIDE :
+                                    Config::MAIN_GCI_FOLDER_B_PATH_OVERRIDE);
+
+  if (!path_override.empty())
+    return {std::move(path_override), false};
+
+  std::string path = File::GetUserPath(D_GCUSER_IDX);
+
+  const bool use_movie_folder = allow_movie_folder == AllowMovieFolder::Yes &&
+                                Movie::IsPlayingInput() && Movie::IsConfigSaved() &&
+                                Movie::IsUsingMemcard(card_index) &&
+                                Movie::IsStartingFromClearSave();
+
+  if (use_movie_folder)
+    path += "Movie" DIR_SEP;
+
+  const DiscIO::Region region = SConfig::ToGameCubeRegion(SConfig::GetInstance().m_region);
+  path = path + SConfig::GetDirectoryForRegion(region) + DIR_SEP +
+         fmt::format("Card {}", char('A' + card_index));
+  return {std::move(path), !use_movie_folder};
 }
 
 void CEXIMemoryCard::SetupGciFolder(u16 sizeMb)
 {
-  const DiscIO::Region region = SConfig::ToGameCubeRegion(SConfig::GetInstance().m_region);
-
   const std::string& game_id = SConfig::GetInstance().GetGameID();
   u32 CurrentGameId = 0;
   if (game_id.length() >= 4 && game_id != "00000000" &&
       SConfig::GetInstance().GetTitleID() != Titles::SYSTEM_MENU)
-    CurrentGameId = BE32((u8*)game_id.c_str());
+  {
+    CurrentGameId = Common::swap32(reinterpret_cast<const u8*>(game_id.c_str()));
+  }
 
-  const bool shift_jis = region == DiscIO::Region::NTSC_J;
+  const bool shift_jis =
+      SConfig::ToGameCubeRegion(SConfig::GetInstance().m_region) == DiscIO::Region::NTSC_J;
 
-  std::string strDirectoryName = File::GetUserPath(D_GCUSER_IDX);
-
-  if (Movie::IsPlayingInput() && Movie::IsConfigSaved() && Movie::IsUsingMemcard(card_index) &&
-      Movie::IsStartingFromClearSave())
-    strDirectoryName += "Movie" DIR_SEP;
-
-  strDirectoryName = strDirectoryName + SConfig::GetDirectoryForRegion(region) + DIR_SEP +
-                     StringFromFormat("Card %c", 'A' + card_index);
+  const auto [strDirectoryName, migrate] = GetGCIFolderPath(card_index, AllowMovieFolder::Yes);
 
   const File::FileInfo file_info(strDirectoryName);
-  if (!file_info.Exists())  // first use of memcard folder, migrate automatically
+  if (!file_info.Exists())
   {
-    MigrateFromMemcardFile(strDirectoryName + DIR_SEP, card_index);
+    if (migrate)  // first use of memcard folder, migrate automatically
+      MigrateFromMemcardFile(strDirectoryName + DIR_SEP, card_index);
+    else
+      File::CreateFullPath(strDirectoryName + DIR_SEP);
   }
   else if (!file_info.IsDirectory())
   {
     if (File::Rename(strDirectoryName, strDirectoryName + ".original"))
     {
       PanicAlertT("%s was not a directory, moved to *.original", strDirectoryName.c_str());
-      MigrateFromMemcardFile(strDirectoryName + DIR_SEP, card_index);
+      if (migrate)
+        MigrateFromMemcardFile(strDirectoryName + DIR_SEP, card_index);
+      else
+        File::CreateFullPath(strDirectoryName + DIR_SEP);
     }
     else  // we tried but the user wants to crash
     {
@@ -204,17 +234,20 @@ void CEXIMemoryCard::SetupGciFolder(u16 sizeMb)
 
 void CEXIMemoryCard::SetupRawMemcard(u16 sizeMb)
 {
-  std::string filename = (card_index == 0) ? SConfig::GetInstance().m_strMemoryCardA :
-                                             SConfig::GetInstance().m_strMemoryCardB;
+  const bool is_slot_a = card_index == 0;
+  std::string filename = is_slot_a ? Config::Get(Config::MAIN_MEMCARD_A_PATH) :
+                                     Config::Get(Config::MAIN_MEMCARD_B_PATH);
   if (Movie::IsPlayingInput() && Movie::IsConfigSaved() && Movie::IsUsingMemcard(card_index) &&
       Movie::IsStartingFromClearSave())
-    filename = File::GetUserPath(D_GCUSER_IDX) +
-               StringFromFormat("Movie%s.raw", (card_index == 0) ? "A" : "B");
+    filename = File::GetUserPath(D_GCUSER_IDX) + fmt::format("Movie{}.raw", is_slot_a ? 'A' : 'B');
 
-  if (sizeMb == MemCard251Mb)
-  {
+  const std::string region_dir =
+      SConfig::GetDirectoryForRegion(SConfig::ToGameCubeRegion(SConfig::GetInstance().m_region));
+  MemoryCard::CheckPath(filename, region_dir, is_slot_a);
+
+  if (sizeMb == MBIT_SIZE_MEMORY_CARD_251)
     filename.insert(filename.find_last_of("."), ".251");
-  }
+
   memorycard = std::make_unique<MemoryCard>(filename, card_index, sizeMb);
 }
 

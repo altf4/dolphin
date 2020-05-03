@@ -7,37 +7,14 @@
 #include <iomanip>
 #include <iterator>
 #include <memory>
+#include <iostream>
 #include <sstream>
 #include <unistd.h>
 
 #include "Common/FileUtil.h"
-#include "Core/CoreTiming.h"
 #include "Core/HW/Memmap.h"
 #include "Core/HW/SystemTimers.h"
 #include "Core/MemoryWatcher.h"
-
-static std::unique_ptr<MemoryWatcher> s_memory_watcher;
-static CoreTiming::EventType* s_event;
-static const int MW_RATE = 600;  // Steps per second
-
-static void MWCallback(u64 userdata, s64 cyclesLate)
-{
-  s_memory_watcher->Step();
-  CoreTiming::ScheduleEvent(SystemTimers::GetTicksPerSecond() / MW_RATE - cyclesLate, s_event);
-}
-
-void MemoryWatcher::Init()
-{
-  s_memory_watcher = std::make_unique<MemoryWatcher>();
-  s_event = CoreTiming::RegisterEvent("MemoryWatcher", MWCallback);
-  CoreTiming::ScheduleEvent(0, s_event);
-}
-
-void MemoryWatcher::Shutdown()
-{
-  CoreTiming::RemoveEvent(s_event);
-  s_memory_watcher.reset();
-}
 
 MemoryWatcher::MemoryWatcher()
 {
@@ -69,7 +46,7 @@ bool MemoryWatcher::LoadAddresses(const std::string& path)
   while (std::getline(locations, line))
     ParseLine(line);
 
-  return m_values.size() > 0;
+  return !m_values.empty();
 }
 
 void MemoryWatcher::ParseLine(const std::string& line)
@@ -122,7 +99,6 @@ void MemoryWatcher::ParseLine(const std::string& line)
 
 bool MemoryWatcher::OpenSocket(const std::string& path)
 {
-  memset(&m_addr, 0, sizeof(m_addr));
   m_addr.sun_family = AF_UNIX;
   strncpy(m_addr.sun_path, path.c_str(), sizeof(m_addr.sun_path) - 1);
 
@@ -241,8 +217,8 @@ std::string MemoryWatcher::ComposeMessage(const std::string& line, const LinkedL
 
 void MemoryWatcher::Step()
 {
-  if (!m_running)
-    return;
+  std::ostringstream message_stream;
+  message_stream << std::hex;
 
   for (auto& entry : m_values)
   {
@@ -254,9 +230,7 @@ void MemoryWatcher::Step()
     {
       // Update the value
       current_value = new_value;
-      std::string message = ComposeMessage(address, new_value);
-      sendto(m_fd, message.c_str(), message.size() + 1, 0, reinterpret_cast<sockaddr*>(&m_addr),
-             sizeof(m_addr));
+      message_stream << address << '\n' << new_value << '\n';
     }
   }
 
